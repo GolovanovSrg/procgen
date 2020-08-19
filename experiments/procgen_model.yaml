@@ -1,5 +1,5 @@
 procgen-ppo:
-    env: procgen_env_wrapper  # Change this at your own risk :D
+    env: procgen_env  # Change this at your own risk :D
     run: PPO
     # Can be replaced by any of the available agents as described at : 
     # https://github.com/ray-project/ray/blob/master/rllib/agents/registry.py#L103
@@ -34,7 +34,7 @@ procgen-ppo:
         ################################################
         env_config: &env_config
             # Name of the procgen environment to train on # Note, that this parameter will be overriden during the evaluation by the AIcrowd evaluators.
-            env_name: miner
+            env_name: bigfish  # coinrun, bigfish, miner
             # The number of unique levels that can be generated. Set to 0 to use unlimited levels
             num_levels: 0
             # The lowest seed that will be used to generated levels. 'start_level' and 'num_levels' fully specify the set of possible levels
@@ -53,6 +53,9 @@ procgen-ppo:
             restrict_themes: False
             use_monochrome_assets: False
             rand_seed: 0
+            is_training: False
+            gamma: 0.999
+            frame_stack: False
 
         ################################################
         ################################################
@@ -64,21 +67,22 @@ procgen-ppo:
         # The GAE(lambda) parameter.
         lambda: 0.95
         # The default learning rate.
-        lr: 5.0e-4
+        lr: &lr 5.0e-4
+        #lr_schedule: [[0, 0], [10000, *lr]]
         # Number of SGD iterations in each outer loop (i.e., number of epochs to
         # execute per train batch).
         num_sgd_iter: 3
         # Total SGD batch size across all devices for SGD. This defines the
         # minibatch size within each epoch.
-        sgd_minibatch_size: 2048 # 8 minibatches per epoch
+        sgd_minibatch_size: 1024 # 8 minibatches per epoch
         # Training batch size, if applicable. Should be >= rollout_fragment_length.
         # Samples batches will be concatenated together to a batch of this size,
         # which is then passed to SGD.
-        train_batch_size: 16384 # 256 * 64
+        train_batch_size: 16384 # 256 * 32
         # Initial coefficient for KL divergence.
-        kl_coeff: 0.0
+        kl_coeff: 0
         # Target value for KL divergence.
-        kl_target: 0.01
+        kl_target: 0
         # Coefficient of the value function loss. IMPORTANT: you must tune this if
         # you set vf_share_layers: True.
         vf_loss_coeff: 0.5
@@ -93,9 +97,6 @@ procgen-ppo:
         grad_clip: 0.5
         # Which observation filter to apply to the observation.
         observation_filter: NoFilter
-        # Share layers for value function. If you set this to True, it's important
-        # to tune vf_loss_coeff.
-        vf_share_layers: True
         # Number of steps after which the episode is forced to terminate. Defaults
         # to `env.spec.max_episode_steps` (if present) for Gym envs.
         horizon: null
@@ -112,7 +113,7 @@ procgen-ppo:
         normalize_actions: False
         # Whether to clip rewards prior to experience postprocessing. Setting to
         # None means clip for Atari only.
-        clip_rewards: null
+        clip_rewards: null # 5 # 10
         # Whether to np.clip() actions to the action space low/high range spec.
         clip_actions: True
         # Whether to use rllib or deepmind preprocessors by default
@@ -130,7 +131,7 @@ procgen-ppo:
         # Use PyTorch (instead of tf). If using `rllib train`, this can also be
         # enabled with the `--torch` flag.
         # NOTE: Some agents may not support `torch` yet and throw an error.
-        use_pytorch: True
+        framework: torch
 
         ################################################
         ################################################
@@ -192,9 +193,15 @@ procgen-ppo:
             # Examples of implementing the model in Keras is also available
             # here :
             # https://github.com/ray-project/ray/blob/master/rllib/examples/custom_keras_model.py
-            custom_model: impala_cnn_torch
+            custom_model: procgen_model
             # Extra options to pass to custom class
-            custom_options: {}
+            custom_model_config: {embedding_size: 256,
+                                  backbone: impala,
+                                  #pretrained: False,
+                                  #freeze_batchnorm: False,
+                                  dropout: 0,
+                                  coords: True,
+                                  n_slots: 0}
 
         ################################################
         ################################################
@@ -314,7 +321,7 @@ procgen-ppo:
         # policy, even if this is a stochastic one. Setting "explore=False" here
         # will result in the evaluation workers not using this optimal policy!
         evaluation_config:
-            env_config: *env_config
+            env_config: {<<: *env_config,  is_training: False}
             explore: True
         # Number of parallel workers to use for evaluation. Note that this is set
         # to zero by default, which means evaluation will be run in the trainer

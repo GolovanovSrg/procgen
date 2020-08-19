@@ -5,7 +5,7 @@ set -e
 # Your experiment file for submission   #
 #########################################
 
-export EXPERIMENT_DEFAULT="experiments/impala-baseline.yaml"
+export EXPERIMENT_DEFAULT="experiments/procgen_model.yaml"
 export EXPERIMENT=${EXPERIMENT:-$EXPERIMENT_DEFAULT}
 
 if [[ -z $AICROWD_IS_GRADING ]]; then
@@ -18,7 +18,7 @@ if [[ -z $AICROWD_IS_GRADING ]]; then
   export OUTPUTS_DIR=./outputs
   export RAY_MEMORY_LIMIT=1500000000
   export RAY_CPUS=16
-  export RAY_STORE_MEMORY=1000000000
+  export RAY_STORE_MEMORY=5000000000
 
   # Cleaning output directory between multiple runs
   rm -rf ${OUTPUTS_DIR}
@@ -27,17 +27,6 @@ fi
 
 
 export VALID_RUN=false
-print_banner() {
-cat << BANNER
-           _____                          _ 
-     /\   |_   _|                        | |
-    /  \    | |  ___ _ __ _____      ____| |
-   / /\ \   | | / __| '__/ _ \ \ /\ / / _  |
-  / ____ \ _| || (__| | | (_) \ V  V / (_| |
- /_/    \_\_____\___|_|  \___/ \_/\_/ \__,_|
- 
-BANNER
-}
 
 print_usage() {
 cat << USAGE
@@ -64,8 +53,6 @@ detect_latest_checkpoint() {
   export LATEST_CHECKPOINT_DIRECTORY=$(ls -trd ${LATEST_EXECUTION_DIRECTORY%/}/*/ | tail -n 1)
   export CHECKPOINT=$(find ${LATEST_CHECKPOINT_DIRECTORY%/} | grep "tune_metadata" | head -n1 | awk -F'\.tune_metadata' '{print $1}')
 }
-
-print_banner
 
 if [[ " $@ " =~ " --train " ]]; then
   export VALID_RUN=true
