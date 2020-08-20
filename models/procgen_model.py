@@ -29,24 +29,6 @@ def init_recursive(module, gain=None, activation=None, param=None):
         else:
             init_recursive(submodule, gain, activation, param)
 
-class SwishFunction(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, i):
-        result = i * torch.sigmoid(i)
-        ctx.save_for_backward(i)
-        return result
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        i = ctx.saved_variables[0]
-        sigmoid_i = torch.sigmoid(i)
-        return grad_output * (sigmoid_i * (1 + i * (1 - sigmoid_i)))
-
-
-class Swish(nn.Module):
-    def forward(self, input_tensor):
-        return SwishFunction.apply(input_tensor)
-
 
 class MultiheadAttention(nn.Module):
     def __init__(self, n_features, n_heads, dropout):
@@ -370,7 +352,7 @@ class ResidualBlock(nn.Module):
 
         self._conv0 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, groups=groups)
         self._conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, groups=groups)
-        self._gn1 = nn.GroupNorm(1, channels)
+        self._gn1 = nn.GroupNorm(1, channels)  # TODO: change it?
         self._gn2 = nn.GroupNorm(1, channels)
         self._activation = nn.PReLU()
     
@@ -479,7 +461,6 @@ class Encoder(nn.Module):
                 self._encoder.fc = nn.Linear(self._encoder.fc.in_features, embedding_size)
 
             self._encoder.avgpool = nn.Sequential(*pool)
-            #init_recursive(self._encoder)
         else:
             assert False
 
@@ -502,10 +483,14 @@ class Encoder(nn.Module):
 
             assert False'''
 
+        #init_recursive(self._encoder, activation='leaky_relu', param=0.25)
+        self._out = nn.Sequential(nn.LayerNorm(embedding_size), nn.Tanh())
+
     def forward(self, x):
         if self._norm is not None:
             x = self._norm(x)
         emb = self._encoder(x).reshape(x.shape[0], -1)
+        emb = self._out(emb)
         return emb
 
     @property
@@ -513,31 +498,71 @@ class Encoder(nn.Module):
         return self._embedding_size
 
 
-class BroadcastDecoder(nn.Module):
-    def __init__(self, latent_dim, output_dim, hidden_dims, image_size):
+class UpsampleLayer(nn.Module):
+    def __init__(self, in_channels, out_channels, scale_factor, kernel_size, stride=1, padding=0):
         super().__init__()
 
-        self._image_size = image_size
+        self._layer = nn.Sequential(nn.Conv2d(in_channels, out_channels * scale_factor ** 2, kernel_size=1),
+                                    nn.PixelShuffle(scale_factor),
+                                    nn.Conv2d(out_channels, out_channels, kernel_size=kernel_size,
+                                              stride=stride, padding=padding, bias=False),
+                                    nn.BatchNorm2d(out_channels),
+                                    nn.PReLU())
+
+    def forward(self, x):
+        return self._layer(x)
+
+
+class Decoder(nn.Module):
+    def __init__(self, latent_dim, output_dim, hidden_dims):
+        super().__init__()
+
+        self._base_size = 8
         self._coords = BorderCoords(latent_dim)
+        self._conv = nn.Sequential(nn.Conv2d(latent_dim, latent_dim, kernel_size=3, padding=1, bias=False),
+                                   nn.BatchNorm2d(latent_dim),
+                                   nn.PReLU())
 
         in_channels = [latent_dim] + list(hidden_dims[:-1])
         out_channels = list(hidden_dims)
 
-        self._layers = nn.ModuleList([nn.Sequential(nn.Conv2d(in_c, out_c, kernel_size=3, padding=1, bias=False),
-                                                    nn.BatchNorm2d(out_c),
-                                                    Swish()) 
-                                                    for in_c, out_c in zip(in_channels, out_channels)])
+        self._upsample_layers = nn.ModuleList([UpsampleLayer(in_c, out_c, scale_factor=2, kernel_size=3, padding=1)
+                                               for in_c, out_c in zip(in_channels, out_channels)])
+
         self._out_conv = nn.Conv2d(out_channels[-1], output_dim, kernel_size=3, padding=1)
 
     def forward(self, latent):
-        x = latent[..., None, None].expand(-1, -1, self._image_size, self._image_size)
+        x = latent[..., None, None].expand(-1, -1, self._base_size, self._base_size)
         x = self._coords(x)
+        x = self._conv(x)
 
-        for layer in self._layers:
-            x = layer(x)
+        for upsample_layer in self._upsample_layers:
+            x = upsample_layer(x)
 
         x = self._out_conv(x)
+        x = torch.sigmoid(x)
 
+        return x
+
+
+class Discriminator(nn.Module):
+    def __init__(self, latent_dim, output_dim, hidden_dims):
+        super().__init__()
+
+        in_feats = [latent_dim] + list(hidden_dims[:-1])
+        out_feats = list(hidden_dims)
+
+        self._layers = nn.ModuleList()
+        for in_f, out_f in zip(in_feats, out_feats):
+            layer = nn.Sequential(nn.Linear(in_f, out_f),
+                                  nn.PReLU())
+            self._layers.append(layer)
+        
+        self._layers.append(nn.Linear(out_feats[-1], output_dim))
+
+    def forward(self, x):
+        for layer in self._layers:
+            x = layer(x)
         return x
 
 
@@ -589,16 +614,20 @@ class ProcgenModel(TorchModelV2, nn.Module):
                                  coords=coords,
                                  n_slots=n_slots)
 
-        '''self._hidden_fc = nn.Sequential(nn.ReLU(inplace=True),
-                                        init(nn.Linear(self._backbone.embedding_size, 256)),
-                                        nn.ReLU(inp lace=True))'''
+        self._decoder = Decoder(latent_dim=embedding_size,
+                                    output_dim=in_channels,
+                                    hidden_dims=[32, 32, 16])
 
-        self._hidden_fc = nn.Sequential(#nn.ReLU(inplace=True),
-                                        #nn.Linear(self._backbone.embedding_size, 256),
+        #self._discriminator = Discriminator(latent_dim=embedding_size,
+        #                                    output_dim=2,
+        #                                    hidden_dims=[64, 64, 32])
+
+        self._hidden_fc = nn.Sequential(init(nn.Linear(self._backbone.embedding_size, 256), activation='leaky_relu', param=0.25),
                                         nn.PReLU())
         self._logits_fc = init(nn.Linear(256, num_outputs), gain=0.01)
         self._value_fc = init(nn.Linear(256, 1))
 
+        self._emb = None
         self._value = None
         self._logits = None
 
@@ -617,12 +646,12 @@ class ProcgenModel(TorchModelV2, nn.Module):
         return x
 
     def _forward(self, x):
-        x = self._backbone(x)
-        x = self._hidden_fc(x)
-        logits = self._logits_fc(x)
-        value = self._value_fc(x)
+        emb = self._backbone(x)
+        out = self._hidden_fc(emb)
+        logits = self._logits_fc(out)
+        value = self._value_fc(out)
         
-        return logits, value
+        return logits, value, emb
         
     @override(TorchModelV2)
     def forward(self, input_dict, state, seq_lens):
@@ -633,14 +662,15 @@ class ProcgenModel(TorchModelV2, nn.Module):
 
         if is_training:
             self.train()
-            logits, value = self._forward(obs)
+            logits, value, emb = self._forward(obs)
         else:
             self.eval()
             with torch.no_grad():
-               logits, value = self._forward(obs)
+               logits, value, emb = self._forward(obs)
 
         self._value = value
         self._logits = logits
+        self._emb = emb
 
         return logits, state
 
@@ -655,7 +685,7 @@ class ProcgenModel(TorchModelV2, nn.Module):
 
         obs = loss_inputs["obs"].float()
         obs = self._preprocess_obs(obs, transforms=True)
-        logits, value = self._forward(obs)
+        logits, value, emb = self._forward(obs)
         action_probas = F.softmax(self._logits.detach(), dim=-1)
         actions = torch.multinomial(action_probas, 1).squeeze(-1)
 
@@ -664,13 +694,52 @@ class ProcgenModel(TorchModelV2, nn.Module):
         self._transform_policy_loss = alpha * F.cross_entropy(logits, actions)
         self._transform_loss = self._transform_value_loss + self._transform_policy_loss
 
-        return [loss_ + self._transform_loss for loss_ in policy_loss]
+        gamma = 0.1
+        reconstruction = self._decoder(self._emb)
+        self._rec_loss = gamma * F.l1_loss(reconstruction, obs / 255)
+        
+        z_gamma = 0.03
+        self._reg_z_loss = z_gamma * self._emb.pow(2).sum(dim=-1).mean()
+        
+        #dec_gamma = 1e-5
+        #self._reg_dec_loss = 0
+        #for p in self._decoder.parameters():
+        #    self._reg_dec_loss += dec_gamma * p.pow(2).sum()
+
+        #tc_gamma = 0.001
+        #discr_logits = self._discriminator(self._emb)
+        #self._tc_loss = tc_gamma * (discr_logits[:, 0] - discr_logits[:, 1]).mean()
+
+        self._dec_loss = self._rec_loss + self._reg_z_loss#  + self._tc_loss
+
+        #discr_gamma = 0.001
+        #z = self._emb.detach()
+        #z_perm = self.permute_latent(z)
+        #D_z_perm = self._discriminator(z_perm)
+        #true_labels = torch.ones(discr_logits.shape[0], dtype=torch.long, device=discr_logits.device, requires_grad=False)
+        #false_labels = torch.zeros(discr_logits.shape[0], dtype=torch.long, device=discr_logits.device, requires_grad=False)
+        #self._discr_tc_loss = discr_gamma * (F.cross_entropy(discr_logits, false_labels) + F.cross_entropy(D_z_perm, true_labels)) / 2
+
+        return [loss_ + self._transform_loss + self._dec_loss for loss_ in policy_loss]
+
+    def permute_latent(self, z):
+        B, D = z.size()
+        # Returns a shuffled inds for each latent code in the batch
+        inds = torch.cat([(D *i) + torch.randperm(D) for i in range(B)])
+        return z.view(-1)[inds].view(B, D)
 
     @override(TorchModelV2)
     def metrics(self):
-        return {'transform_value_loss': self._transform_value_loss,
-                'transform_policy_loss': self._transform_policy_loss,
-                'transform_loss': self._transform_loss}
+        return {'transform_value_loss': self._transform_value_loss.item(),
+                'transform_policy_loss': self._transform_policy_loss.item(),
+                'transform_loss': self._transform_loss.item(),
+                'rec_loss': self._rec_loss.item(),
+                'reg_z_loss': self._reg_z_loss.item(),
+                #'reg_dec_loss': self._reg_dec_loss.item(),
+                'dec_loss': self._dec_loss.item(),
+                #'tc_loss': self._tc_loss.item(),
+                #'discr_tc_loss': self._discr_tc_loss.item()
+                }
 
 
 ModelCatalog.register_custom_model("procgen_model", ProcgenModel)
