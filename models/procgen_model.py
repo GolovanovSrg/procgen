@@ -545,27 +545,6 @@ class Decoder(nn.Module):
         return x
 
 
-class Discriminator(nn.Module):
-    def __init__(self, latent_dim, output_dim, hidden_dims):
-        super().__init__()
-
-        in_feats = [latent_dim] + list(hidden_dims[:-1])
-        out_feats = list(hidden_dims)
-
-        self._layers = nn.ModuleList()
-        for in_f, out_f in zip(in_feats, out_feats):
-            layer = nn.Sequential(nn.Linear(in_f, out_f),
-                                  nn.PReLU())
-            self._layers.append(layer)
-        
-        self._layers.append(nn.Linear(out_feats[-1], output_dim))
-
-    def forward(self, x):
-        for layer in self._layers:
-            x = layer(x)
-        return x
-
-
 #=====================================================================
 
 
@@ -616,11 +595,7 @@ class ProcgenModel(TorchModelV2, nn.Module):
 
         self._decoder = Decoder(latent_dim=embedding_size,
                                     output_dim=in_channels,
-                                    hidden_dims=[32, 32, 16])
-
-        #self._discriminator = Discriminator(latent_dim=embedding_size,
-        #                                    output_dim=2,
-        #                                    hidden_dims=[64, 64, 32])
+                                    hidden_dims=[64, 64, 32])
 
         self._hidden_fc = nn.Sequential(init(nn.Linear(self._backbone.embedding_size, 256), activation='leaky_relu', param=0.25),
                                         nn.PReLU())
@@ -706,27 +681,9 @@ class ProcgenModel(TorchModelV2, nn.Module):
         #for p in self._decoder.parameters():
         #    self._reg_dec_loss += dec_gamma * p.pow(2).sum()
 
-        #tc_gamma = 0.001
-        #discr_logits = self._discriminator(self._emb)
-        #self._tc_loss = tc_gamma * (discr_logits[:, 0] - discr_logits[:, 1]).mean()
-
-        self._dec_loss = self._rec_loss + self._reg_z_loss#  + self._tc_loss
-
-        #discr_gamma = 0.001
-        #z = self._emb.detach()
-        #z_perm = self.permute_latent(z)
-        #D_z_perm = self._discriminator(z_perm)
-        #true_labels = torch.ones(discr_logits.shape[0], dtype=torch.long, device=discr_logits.device, requires_grad=False)
-        #false_labels = torch.zeros(discr_logits.shape[0], dtype=torch.long, device=discr_logits.device, requires_grad=False)
-        #self._discr_tc_loss = discr_gamma * (F.cross_entropy(discr_logits, false_labels) + F.cross_entropy(D_z_perm, true_labels)) / 2
+        self._dec_loss = self._rec_loss + self._reg_z_loss
 
         return [loss_ + self._transform_loss + self._dec_loss for loss_ in policy_loss]
-
-    def permute_latent(self, z):
-        B, D = z.size()
-        # Returns a shuffled inds for each latent code in the batch
-        inds = torch.cat([(D *i) + torch.randperm(D) for i in range(B)])
-        return z.view(-1)[inds].view(B, D)
 
     @override(TorchModelV2)
     def metrics(self):
@@ -736,10 +693,7 @@ class ProcgenModel(TorchModelV2, nn.Module):
                 'rec_loss': self._rec_loss.item(),
                 'reg_z_loss': self._reg_z_loss.item(),
                 #'reg_dec_loss': self._reg_dec_loss.item(),
-                'dec_loss': self._dec_loss.item(),
-                #'tc_loss': self._tc_loss.item(),
-                #'discr_tc_loss': self._discr_tc_loss.item()
-                }
+                'dec_loss': self._dec_loss.item()}
 
 
 ModelCatalog.register_custom_model("procgen_model", ProcgenModel)

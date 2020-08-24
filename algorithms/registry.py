@@ -22,7 +22,13 @@ def _import_random_policy():
     return RandomPolicyTrainer
 
 
+def _import_custom_ppo():
+    from .custom_ppo import CustomPPOTrainer
+    return CustomPPOTrainer
+
+
 CUSTOM_ALGORITHMS = {
     "custom/CustomRandomAgent": _import_custom_random_agent,
-    "RandomPolicy": _import_random_policy
+    "RandomPolicy": _import_random_policy,
+    "CustomPPO": _import_custom_ppo
 }
