@@ -13,6 +13,7 @@ RUN apt -qq update && apt -qq install -y --no-install-recommends \
     xvfb \
     ffmpeg \
     freeglut3-dev \
+    gcc
  && rm -rf /var/cache/*
 
 # S3 client
