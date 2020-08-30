@@ -68,13 +68,12 @@ procgen-ppo:
         lambda: 0.95
         # The default learning rate.
         lr: &lr 5.0e-4
-        #lr_schedule: [[0, 0], [10000, *lr]]
         # Number of SGD iterations in each outer loop (i.e., number of epochs to
         # execute per train batch).
         num_sgd_iter: 3
         # Total SGD batch size across all devices for SGD. This defines the
         # minibatch size within each epoch.
-        sgd_minibatch_size: 512 # 8 minibatches per epoch
+        sgd_minibatch_size: 512
         # Training batch size, if applicable. Should be >= rollout_fragment_length.
         # Samples batches will be concatenated together to a batch of this size,
         # which is then passed to SGD.
@@ -197,9 +196,6 @@ procgen-ppo:
             # Extra options to pass to custom class
             custom_model_config: {embedding_size: 256,
                                   backbone: impala,
-                                  #pretrained: False,
-                                  #freeze_batchnorm: False,
-                                  dropout: 0,
                                   coords: True,
                                   n_slots: 0}
 
@@ -210,7 +206,7 @@ procgen-ppo:
         ################################################
         # Number of rollout worker actors to create for parallel sampling. Setting
         # this to 0 will force rollouts to be done in the trainer actor.
-        num_workers: 6
+        num_workers: 3
 
         # Number of environments to evaluate vectorwise per worker. This enables
         # model inference batching, which can improve performance for inference

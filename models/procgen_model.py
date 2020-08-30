@@ -1,5 +1,3 @@
-import math
-
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.models import ModelCatalog
 from ray.rllib.utils.annotations import override
@@ -11,6 +9,19 @@ F = nn.functional
 
 # MODULES
 #=====================================================================
+
+
+def mish(input):
+    return input * torch.tanh(F.softplus(input))
+
+
+class Mish(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, input):
+        return mish(input)
+
 
 def init(module, gain=None, activation=None, param=None):
     if gain is None:
@@ -28,125 +39,6 @@ def init_recursive(module, gain=None, activation=None, param=None):
             init(submodule, gain, activation, param)
         else:
             init_recursive(submodule, gain, activation, param)
-
-
-class MultiheadAttention(nn.Module):
-    def __init__(self, n_features, n_heads, dropout):
-        super().__init__()
-
-        assert n_features % n_heads == 0
-
-        self.n_features = n_features
-        self.n_heads = n_heads
-
-        self._qkv_proj = nn.Linear(n_features, 3 * n_features)
-        self._out_proj = nn.Linear(n_features, n_features)
-        self._dropout = nn.Dropout(dropout)
-
-        self._init_weights()
-
-    def _init_weights(self):
-        nn.init.normal_(self._qkv_proj.weight, std=0.02)
-        nn.init.normal_(self._out_proj.weight, std=0.02)
-
-    def _split_heads(self, x, is_key: bool=False):
-        x = x.reshape(x.shape[0], x.shape[1], self.n_heads, self.n_features // self.n_heads)
-        x = x.permute(0, 2, 3, 1) if is_key else x.permute(0, 2, 1, 3)
-
-        return x
-
-    def _attn(self, q, k, v):
-        w = torch.matmul(q, k) / math.sqrt(self.n_features // self.n_heads)
-        w = F.softmax(w, dim=-1)
-        w = self._dropout(w)
-        out = torch.matmul(w, v)
-
-        return out
-
-    def _merge_heads(self, x):
-        x = x.permute(0, 2, 1, 3)
-        x = x.reshape(x.shape[0], x.shape[1], self.n_features)
-
-        return x
-
-    def forward(self, query, key, value):
-        query, key, value = self._qkv_proj(query).split(self.n_features, dim=-1)
-
-        query = self._split_heads(query)
-        key = self._split_heads(key, is_key=True)
-        value = self._split_heads(value)
-
-        x = self._attn(query, key, value)
-        x = self._merge_heads(x)
-        x = self._out_proj(x)
-
-        return x
-
-
-class FeedForward(nn.Module):
-    def __init__(self, in_features, middle_features, dropout):
-        super().__init__()
-
-        self._layer_1 = nn.Linear(in_features, middle_features)
-        self._layer_2 = nn.Linear(middle_features, in_features)
-        self._activation = nn.PReLU()
-        self._dropout = nn.Dropout(dropout)
-
-        self._init_weights()
-
-    def _init_weights(self):
-        nn.init.normal_(self._layer_1.weight, std=0.02)
-        nn.init.normal_(self._layer_2.weight, std=0.02)
-
-    def forward(self, x):
-        x = self._layer_1(x)
-        x = self._activation(x)
-        x = self._dropout(x)
-        x = self._layer_2(x)
-
-        return x
-
-class TransformerLayer(nn.Module):
-    def __init__(self, n_features, n_heads=1, dropout=0.0, attn_dropout=0.0, ff_dropout=0.0):
-        super().__init__()
-
-        self._attn = MultiheadAttention(n_features, n_heads, attn_dropout)
-        self._attn_norm = nn.LayerNorm(n_features)
-        self._attn_dropout = nn.Dropout(dropout)
-        self._attn_res = nn.GRUCell(n_features, n_features)
-        self._ff = FeedForward(n_features, n_features, ff_dropout)
-        self._ff_norm = nn.LayerNorm(n_features)
-        self._ff_dropout = nn.Dropout(dropout)
-        self._ff_res = nn.GRUCell(n_features, n_features)
-
-    def _process_attn(self, x):
-        b, l, d = x.shape
-
-        residual = x
-        x = self._attn_norm(x)
-        x = self._attn(x, x, x)
-        x = self._attn_dropout(x)
-        x = self._attn_res(x.reshape(-1, d), residual.reshape(-1, d)).reshape(b, l, d)
-
-        return x
-
-    def _process_ff(self, x):
-        b, l, d = x.shape
-
-        residual = x
-        x = self._ff_norm(x)
-        x = self._ff(x)
-        x = self._ff_dropout(x)
-        x = self._ff_res(x.reshape(-1, d), residual.reshape(-1, d)).reshape(b, l, d)
-
-        return x
-
-    def forward(self, x):
-        x = self._process_attn(x)
-        x = self._process_ff(x)
-
-        return x
-
 
 class ImageNorm(nn.Module):
     def __init__(self, value=255, imagenet_norm=False):
@@ -243,7 +135,7 @@ class SlotAttention(nn.Module):
     """Object-Centric Learning with Slot Attention: https://arxiv.org/abs/2006.15055
     Original code: https://github.com/lucidrains/slot-attention
     """
-    def __init__(self, dim, num_slots, iters=3, mlp=False, eps=1e-8, hidden_dim=128):
+    def __init__(self, dim, num_slots, iters=3, eps=1e-8):
         super().__init__()
 
         self.num_slots = num_slots
@@ -263,13 +155,6 @@ class SlotAttention(nn.Module):
         self.norm_input  = nn.LayerNorm(dim)
         self.norm_slots  = nn.LayerNorm(dim)
 
-        self.mlp = None
-        if mlp:
-            hidden_dim = max(dim, hidden_dim)
-            self.mlp = nn.Sequential(nn.Linear(dim, hidden_dim),
-                                     nn.PReLU(),
-                                     nn.Linear(hidden_dim, dim))
-            self.norm_pre_ff = nn.LayerNorm(dim)
 
     def forward(self, inputs, num_slots=None):
         b, n, d = inputs.shape
@@ -297,9 +182,6 @@ class SlotAttention(nn.Module):
 
             slots = self.gru(updates.reshape(-1, d), slots_prev.reshape(-1, d)).reshape(b, -1, d)
 
-            if self.mlp is not None:
-                slots = slots + self.mlp(self.norm_pre_ff(slots))
-
         return slots
 
 
@@ -325,23 +207,20 @@ class BorderCoords(nn.Module):
 
 
 class SlotAttentionPool2d(nn.Module):
-    def __init__(self, num_features, num_slots, n_iters=3, n_layers=1):
+    def __init__(self, in_features, out_features, num_slots, n_iters=3):
         super().__init__()
 
-        self._slot_attn = SlotAttention(num_features, num_slots, n_iters)
-        self._tr = nn.Sequential(*[TransformerLayer(num_features) for _ in range(n_layers)])
-        self._p = nn.Parameter(torch.randn(1, 1, num_features))
-        self._out_proj = nn.Linear(num_features, num_features)
-
+        self._slot_attn = SlotAttention(in_features, num_slots, n_iters)
+        self._w = nn.Linear(in_features, 1)
+        self._out = nn.Linear(in_features, out_features)
 
     def forward(self, x):
         b, c, h, w = x.shape
         x = x.reshape(b, c, h * w).permute(0, 2, 1)
 
         x = self._slot_attn(x)
-        x = self._tr(torch.cat([x, self._p.expand(b, -1, -1)], dim=1))[:, -1, :]
-
-        out = self._out_proj(x)
+        w = F.softmax(self._w(x), dim=1)
+        out = torch.sum(w * self._out(x), dim=1)
 
         return out
 
@@ -352,9 +231,9 @@ class ResidualBlock(nn.Module):
 
         self._conv0 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, groups=groups)
         self._conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, groups=groups)
-        self._gn1 = nn.GroupNorm(1, channels)  # TODO: change it?
+        self._gn1 = nn.GroupNorm(1, channels)
         self._gn2 = nn.GroupNorm(1, channels)
-        self._activation = nn.PReLU()
+        self._activation = Mish()
     
     def forward(self, x):
         inputs = x
@@ -387,14 +266,14 @@ class ConvSequence(nn.Module):
 
 
 class Impala(nn.Module):
-    def __init__(self, in_channels, n_channels=32, groups=1):
+    def __init__(self, in_channels, n_channels=32):
         super().__init__()
 
-        self.convs = nn.Sequential(ConvSequence(in_channels, n_channels // 2, groups),
-                                   ConvSequence(n_channels // 2, n_channels, groups),
-                                   ConvSequence(n_channels, n_channels, groups))
+        self.convs = nn.Sequential(ConvSequence(in_channels, n_channels // 2),
+                                   ConvSequence(n_channels // 2, n_channels),
+                                   ConvSequence(n_channels, n_channels))
         self.avgpool = nn.Identity()
-        self.activation = nn.PReLU()
+        self.activation = Mish()
 
         self.n_channels = n_channels
         n = int(64 / 2 ** len(self.convs))
@@ -417,17 +296,14 @@ class Impala(nn.Module):
 #ENCODERS
 #=====================================================================
 
-# TODO: mobilenet
-
 import torchvision.models as resnet_models
-import resnest.torch as resnest_models
 
 
 class Encoder(nn.Module):
-    _allowed_models = ['impala', 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnest50', 'resnest101']
+    _allowed_models = ['impala', 'resnet18', 'resnet34', 'resnet50', 'resnet101']
 
     def __init__(self, embedding_size, model, in_channels=3, normalize_input=True, normalize_value=255,
-                 pretrained=False, freeze_batchnorm=False, dropout=0, coords=False, n_slots=None):
+                 pretrained=False, freeze_batchnorm=False, coords=False, n_slots=None):
         super().__init__()
 
         if model not in self._allowed_models:
@@ -448,15 +324,9 @@ class Encoder(nn.Module):
 
             if coords:
                 pool.append(BorderCoords(pool_channels))
-
             if n_slots is not None and n_slots > 0:
-                pool.append(nn.Sequential(nn.GroupNorm(1, pool_channels),
-                                        nn.Conv2d(pool_channels, pool_channels, 1),
-                                        nn.PReLU(),
-                                        nn.Conv2d(pool_channels, pool_channels, 1)))
-                pool.append(SlotAttentionPool2d(pool_channels, num_slots=n_slots, n_iters=3))
-                pool.append(nn.Dropout(dropout))
-                self._encoder.fc = nn.Linear(pool_channels, embedding_size)
+                pool.append(SlotAttentionPool2d(pool_channels, embedding_size, num_slots=n_slots, n_iters=3))
+                self._encoder.fc = nn.Identity()
             else:
                 self._encoder.fc = nn.Linear(self._encoder.fc.in_features, embedding_size)
 
@@ -483,7 +353,7 @@ class Encoder(nn.Module):
 
             assert False'''
 
-        #init_recursive(self._encoder, activation='leaky_relu', param=0.25)
+        init_recursive(self._encoder, activation='relu')
         self._out = nn.Sequential(nn.LayerNorm(embedding_size), nn.Tanh())
 
     def forward(self, x):
@@ -506,8 +376,8 @@ class UpsampleLayer(nn.Module):
                                     nn.PixelShuffle(scale_factor),
                                     nn.Conv2d(out_channels, out_channels, kernel_size=kernel_size,
                                               stride=stride, padding=padding, bias=False),
-                                    nn.BatchNorm2d(out_channels),
-                                    nn.PReLU())
+                                    nn.GroupNorm(1, out_channels),
+                                    Mish())
 
     def forward(self, x):
         return self._layer(x)
@@ -520,8 +390,8 @@ class Decoder(nn.Module):
         self._base_size = 8
         self._coords = BorderCoords(latent_dim)
         self._conv = nn.Sequential(nn.Conv2d(latent_dim, latent_dim, kernel_size=3, padding=1, bias=False),
-                                   nn.BatchNorm2d(latent_dim),
-                                   nn.PReLU())
+                                   nn.GroupNorm(1, latent_dim),
+                                   Mish())
 
         in_channels = [latent_dim] + list(hidden_dims[:-1])
         out_channels = list(hidden_dims)
@@ -540,7 +410,6 @@ class Decoder(nn.Module):
             x = upsample_layer(x)
 
         x = self._out_conv(x)
-        x = torch.sigmoid(x)
 
         return x
 
@@ -572,7 +441,7 @@ def random_crop(imgs, crop_size=64, pad_size=12):
 class ProcgenModel(TorchModelV2, nn.Module):
     def __init__(self, obs_space, action_space, num_outputs, model_config, name,
                  embedding_size, backbone, pretrained=False, freeze_batchnorm=False,
-                 dropout=0, coords=False, n_slots=None):
+                 coords=False, n_slots=None):
         TorchModelV2.__init__(self, obs_space, action_space, num_outputs,
                               model_config, name)
         nn.Module.__init__(self)
@@ -589,22 +458,22 @@ class ProcgenModel(TorchModelV2, nn.Module):
                                  model=backbone,
                                  pretrained=pretrained,
                                  freeze_batchnorm=freeze_batchnorm,
-                                 dropout=dropout,
                                  coords=coords,
                                  n_slots=n_slots)
 
         self._decoder = Decoder(latent_dim=embedding_size,
                                     output_dim=in_channels,
-                                    hidden_dims=[64, 64, 32])
+                                    hidden_dims=[64, 32, 16])
 
-        self._hidden_fc = nn.Sequential(init(nn.Linear(self._backbone.embedding_size, 256), activation='leaky_relu', param=0.25),
-                                        nn.PReLU())
+        self._hidden_fc = nn.Sequential(init(nn.Linear(self._backbone.embedding_size, 256), activation='relu'),
+                                        Mish())
         self._logits_fc = init(nn.Linear(256, num_outputs), gain=0.01)
         self._value_fc = init(nn.Linear(256, 1))
 
         self._emb = None
         self._value = None
         self._logits = None
+
 
     def _preprocess_obs(self, x, transforms=False):
         if x.dim() == 4:
@@ -658,28 +527,26 @@ class ProcgenModel(TorchModelV2, nn.Module):
     def custom_loss(self, policy_loss, loss_inputs):
         assert self._value is not None and self._logits is not None
 
+        # Augmentations
         obs = loss_inputs["obs"].float()
         obs = self._preprocess_obs(obs, transforms=True)
-        logits, value, emb = self._forward(obs)
+        logits, value, _ = self._forward(obs)
         action_probas = F.softmax(self._logits.detach(), dim=-1)
         actions = torch.multinomial(action_probas, 1).squeeze(-1)
 
         alpha = 0.1
         self._transform_value_loss = alpha * 0.5 * F.mse_loss(value, self._value.detach())
         self._transform_policy_loss = alpha * F.cross_entropy(logits, actions)
+
         self._transform_loss = self._transform_value_loss + self._transform_policy_loss
 
+        # Reconstruction
         gamma = 0.1
         reconstruction = self._decoder(self._emb)
-        self._rec_loss = gamma * F.l1_loss(reconstruction, obs / 255)
+        self._rec_loss = gamma * F.l1_loss(reconstruction, obs) / 255
         
         z_gamma = 0.03
         self._reg_z_loss = z_gamma * self._emb.pow(2).sum(dim=-1).mean()
-        
-        #dec_gamma = 1e-5
-        #self._reg_dec_loss = 0
-        #for p in self._decoder.parameters():
-        #    self._reg_dec_loss += dec_gamma * p.pow(2).sum()
 
         self._dec_loss = self._rec_loss + self._reg_z_loss
 
@@ -692,7 +559,6 @@ class ProcgenModel(TorchModelV2, nn.Module):
                 'transform_loss': self._transform_loss.item(),
                 'rec_loss': self._rec_loss.item(),
                 'reg_z_loss': self._reg_z_loss.item(),
-                #'reg_dec_loss': self._reg_dec_loss.item(),
                 'dec_loss': self._dec_loss.item()}
 
 
