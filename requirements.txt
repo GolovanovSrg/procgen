@@ -1,7 +1,7 @@
 ray[rllib]==0.8.7
 procgen==0.10.4
-tensorflow==2.1.0
+tensorflow>=2.1.0
 mlflow==1.8.0
 boto3==1.13.10
 torch==1.6.0
-torchvision==0.6.0
+torchvision>=0.6.0
