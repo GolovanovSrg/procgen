@@ -17,14 +17,13 @@ procgen-ppo:
     ################################################
     stop:
         timesteps_total: 8000000
-        #time_total_s: 7200
+        time_total_s: 7200
 
     ################################################
     # === Settings for Checkpoints ===
     ################################################
-    checkpoint_freq: 100
+    checkpoint_freq: 25
     checkpoint_at_end: True
-    keep_checkpoints_num: 5
 
     config:
         ################################################
@@ -53,9 +52,6 @@ procgen-ppo:
             restrict_themes: False
             use_monochrome_assets: False
             rand_seed: 0
-            is_training: False
-            gamma: 0.999
-            frame_stack: False
 
         ################################################
         ################################################
@@ -308,7 +304,7 @@ procgen-ppo:
         evaluation_interval: 25
         # Number of episodes to run per evaluation period. If using multiple
         # evaluation workers, we will run at least this many episodes total.
-        evaluation_num_episodes: 50
+        evaluation_num_episodes: 3
         # Internal flag that is set to True for evaluation workers.
         in_evaluation: True
         # Typical usage is to pass extra args to evaluation env creator
@@ -317,11 +313,13 @@ procgen-ppo:
         # policy, even if this is a stochastic one. Setting "explore=False" here
         # will result in the evaluation workers not using this optimal policy!
         evaluation_config:
-            env_config: {<<: *env_config,  is_training: False}
+            num_envs_per_worker: 1
+            env_config:
+                render_mode: rgb_array
             explore: True
         # Number of parallel workers to use for evaluation. Note that this is set
         # to zero by default, which means evaluation will be run in the trainer
         # process. If you increase this, it will increase the Ray resource usage
         # of the trainer since evaluation workers are created separately from
         # rollout workers.
-        evaluation_num_workers: 0
+        evaluation_num_workers: 1
