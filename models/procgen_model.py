@@ -11,16 +11,12 @@ F = nn.functional
 #=====================================================================
 
 
-def mish(input):
-    return input * torch.tanh(F.softplus(input))
-
-
 class Mish(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, input):
-        return mish(input)
+    def forward(self, x):
+        return x * torch.tanh(F.softplus(x))
 
 
 def init(module, gain=None, activation=None, param=None):
@@ -28,7 +24,8 @@ def init(module, gain=None, activation=None, param=None):
         gain = 1 if activation is None else nn.init.calculate_gain(activation, param)
 
     nn.init.orthogonal_(module.weight, gain=gain)
-    nn.init.constant_(module.bias, 0)
+    if module.bias is not None:
+        nn.init.constant_(module.bias, 0)
 
     return module
 
@@ -225,12 +222,27 @@ class SlotAttentionPool2d(nn.Module):
         return out
 
 
+class SeModule(nn.Module):
+    def __init__(self, in_size, reduction=1):
+        super(SeModule, self).__init__()
+        self.se = nn.Sequential(nn.AdaptiveAvgPool2d(1),
+                                nn.Conv2d(in_size, in_size // reduction, kernel_size=1, bias=False),
+                                nn.GroupNorm(1, in_size // reduction),
+                                Mish(),
+                                nn.Conv2d(in_size // reduction, in_size, kernel_size=1, bias=False),
+                                nn.GroupNorm(1, in_size),
+                                nn.Sigmoid())
+
+    def forward(self, x):
+        return x * self.se(x)
+
+
 class ResidualBlock(nn.Module):
-    def __init__(self, channels, groups=1):
+    def __init__(self, channels):
         super().__init__()
 
-        self._conv0 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, groups=groups)
-        self._conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, groups=groups)
+        self._conv0 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self._conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
         self._gn1 = nn.GroupNorm(1, channels)
         self._gn2 = nn.GroupNorm(1, channels)
         self._activation = Mish()
@@ -248,13 +260,13 @@ class ResidualBlock(nn.Module):
 
 
 class ConvSequence(nn.Module):
-    def __init__(self, in_channels, out_channels, groups=1, down=True):
+    def __init__(self, in_channels, out_channels, down=True):
         super().__init__()
 
         self._down = down
         self._conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self._res_block0 = ResidualBlock(out_channels, groups)
-        self._res_block1 = ResidualBlock(out_channels, groups)
+        self._res_block0 = ResidualBlock(out_channels)
+        self._res_block1 = ResidualBlock(out_channels)
 
     def forward(self, x):
         x = self._conv(x)
@@ -266,18 +278,24 @@ class ConvSequence(nn.Module):
 
 
 class Impala(nn.Module):
-    def __init__(self, in_channels, n_channels=32):
+    def __init__(self, in_channels, hidden_dims):
         super().__init__()
 
-        self.convs = nn.Sequential(ConvSequence(in_channels, n_channels // 2),
-                                   ConvSequence(n_channels // 2, n_channels),
-                                   ConvSequence(n_channels, n_channels))
+        in_channels = [in_channels] + list(hidden_dims[:-1])
+        out_channels = list(hidden_dims)
+
+        convs = []
+        for in_c, out_c in zip(in_channels, out_channels):
+            layer = ConvSequence(in_c, out_c)
+            convs.append(layer)
+
+        self.convs = nn.Sequential(*convs)
         self.avgpool = nn.Identity()
         self.activation = Mish()
 
-        self.n_channels = n_channels
+        self.n_channels = hidden_dims[-1]
         n = int(64 / 2 ** len(self.convs))
-        self.fc = nn.Linear(n_channels * n * n, n_channels)
+        self.fc = nn.Linear(self.n_channels * n * n, self.n_channels)
 
     def forward(self, x):
         assert x.shape[-2:] == (64, 64)
@@ -317,7 +335,7 @@ class Encoder(nn.Module):
             self._norm = ImageNorm(normalize_value, imagenet_norm)
 
         if model == 'impala':
-            self._encoder = Impala(in_channels)
+            self._encoder = Impala(in_channels, hidden_dims=[32, 32, 64])
 
             pool_channels = self._encoder.n_channels
             pool = []
@@ -460,10 +478,10 @@ class ProcgenModel(TorchModelV2, nn.Module):
                                  freeze_batchnorm=freeze_batchnorm,
                                  coords=coords,
                                  n_slots=n_slots)
-
-        self._decoder = Decoder(latent_dim=embedding_size,
-                                    output_dim=in_channels,
-                                    hidden_dims=[64, 32, 16])
+ 
+        '''self._decoder = Decoder(latent_dim=embedding_size,
+                                output_dim=in_channels,
+                                hidden_dims=[64, 32, 16])'''
 
         self._hidden_fc = nn.Sequential(init(nn.Linear(self._backbone.embedding_size, 256), activation='relu'),
                                         Mish())
@@ -484,6 +502,8 @@ class ProcgenModel(TorchModelV2, nn.Module):
         else:
             assert False
 
+        x = x.float()
+
         if transforms:
             x = random_crop(x, crop_size=64, pad_size=12)
         
@@ -499,16 +519,18 @@ class ProcgenModel(TorchModelV2, nn.Module):
         
     @override(TorchModelV2)
     def forward(self, input_dict, state, seq_lens):
-        obs = input_dict["obs"].float()
+        obs = input_dict["obs"]
         is_training = input_dict['is_training']
 
         obs = self._preprocess_obs(obs)
 
         if is_training:
-            self.train()
+            if not self.training:
+                self.train()
             logits, value, emb = self._forward(obs)
         else:
-            self.eval()
+            if self.training:
+                self.eval()
             with torch.no_grad():
                logits, value, emb = self._forward(obs)
 
@@ -528,7 +550,7 @@ class ProcgenModel(TorchModelV2, nn.Module):
         assert self._value is not None and self._logits is not None
 
         # Augmentations
-        obs = loss_inputs["obs"].float()
+        obs = loss_inputs["obs"]
         obs = self._preprocess_obs(obs, transforms=True)
         logits, value, _ = self._forward(obs)
         action_probas = F.softmax(self._logits.detach(), dim=-1)
@@ -537,20 +559,17 @@ class ProcgenModel(TorchModelV2, nn.Module):
         alpha = 0.1
         self._transform_value_loss = alpha * 0.5 * F.mse_loss(value, self._value.detach())
         self._transform_policy_loss = alpha * F.cross_entropy(logits, actions)
-
         self._transform_loss = self._transform_value_loss + self._transform_policy_loss
 
+        emb_gamma = 0.03
+        self._reg_emb_loss = emb_gamma * self._emb.pow(2).sum(dim=-1).mean()
+
         # Reconstruction
-        gamma = 0.1
-        reconstruction = self._decoder(self._emb)
-        self._rec_loss = gamma * F.l1_loss(reconstruction, obs) / 255
-        
-        z_gamma = 0.03
-        self._reg_z_loss = z_gamma * self._emb.pow(2).sum(dim=-1).mean()
+        '''gamma = 0.1
+        reconstruction = self._decoder(self._emb)  # TODO: sample part
+        self._rec_loss = gamma * F.l1_loss(reconstruction, obs) / 255'''
 
-        self._dec_loss = self._rec_loss + self._reg_z_loss
-
-        return [loss_ + self._transform_loss + self._dec_loss for loss_ in policy_loss]
+        return [loss_ + self._transform_loss + self._reg_emb_loss for loss_ in policy_loss]
 
     @override(TorchModelV2)
     def metrics(self):
@@ -558,7 +577,7 @@ class ProcgenModel(TorchModelV2, nn.Module):
                 'transform_policy_loss': self._transform_policy_loss.item(),
                 'transform_loss': self._transform_loss.item(),
                 'rec_loss': self._rec_loss.item(),
-                'reg_z_loss': self._reg_z_loss.item(),
+                'reg_emb_loss': self._reg_emb_loss.item(),
                 'dec_loss': self._dec_loss.item()}
 
 
