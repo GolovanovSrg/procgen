@@ -1,5 +1,5 @@
 procgen-ppo:
-    env: procgen_env  # Change this at your own risk :D
+    env: procgen_env_wrapper  # Change this at your own risk :D
     run: CustomPPO
     # Can be replaced by any of the available agents as described at : 
     # https://github.com/ray-project/ray/blob/master/rllib/agents/registry.py#L103
@@ -69,7 +69,7 @@ procgen-ppo:
         num_sgd_iter: 3
         # Total SGD batch size across all devices for SGD. This defines the
         # minibatch size within each epoch.
-        sgd_minibatch_size: 1024
+        sgd_minibatch_size: 512
         # Training batch size, if applicable. Should be >= rollout_fragment_length.
         # Samples batches will be concatenated together to a batch of this size,
         # which is then passed to SGD.
@@ -202,12 +202,12 @@ procgen-ppo:
         ################################################
         # Number of rollout worker actors to create for parallel sampling. Setting
         # this to 0 will force rollouts to be done in the trainer actor.
-        num_workers: 3
+        num_workers: 4
 
         # Number of environments to evaluate vectorwise per worker. This enables
         # model inference batching, which can improve performance for inference
         # bottlenecked workloads.
-        num_envs_per_worker: 12
+        num_envs_per_worker: 16
 
         # Divide episodes into fragments of this many steps each during rollouts.
         # Sample batches of this size are collected from rollout workers and
@@ -316,7 +316,7 @@ procgen-ppo:
             num_envs_per_worker: 1
             env_config:
                 render_mode: rgb_array
-            explore: True
+            explore: False
         # Number of parallel workers to use for evaluation. Note that this is set
         # to zero by default, which means evaluation will be run in the trainer
         # process. If you increase this, it will increase the Ray resource usage
