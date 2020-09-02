@@ -335,7 +335,7 @@ class Encoder(nn.Module):
             self._norm = ImageNorm(normalize_value, imagenet_norm)
 
         if model == 'impala':
-            self._encoder = Impala(in_channels, hidden_dims=[32, 32, 64])
+            self._encoder = Impala(in_channels, hidden_dims=[16, 32, 32])
 
             pool_channels = self._encoder.n_channels
             pool = []
@@ -509,11 +509,16 @@ class ProcgenModel(TorchModelV2, nn.Module):
         
         return x
 
+    def _get_logits_value(self, emb):
+        h = self._hidden_fc(emb)
+        logits = self._logits_fc(h)
+        value = self._value_fc(h)
+
+        return logits, value
+
     def _forward(self, x):
         emb = self._backbone(x)
-        out = self._hidden_fc(emb)
-        logits = self._logits_fc(out)
-        value = self._value_fc(out)
+        logits, value = self._get_logits_value(emb)
         
         return logits, value, emb
         
@@ -576,9 +581,8 @@ class ProcgenModel(TorchModelV2, nn.Module):
         return {'transform_value_loss': self._transform_value_loss.item(),
                 'transform_policy_loss': self._transform_policy_loss.item(),
                 'transform_loss': self._transform_loss.item(),
-                'rec_loss': self._rec_loss.item(),
-                'reg_emb_loss': self._reg_emb_loss.item(),
-                'dec_loss': self._dec_loss.item()}
+                #'rec_loss': self._rec_loss.item(),
+                'reg_emb_loss': self._reg_emb_loss.item()}
 
 
 ModelCatalog.register_custom_model("procgen_model", ProcgenModel)
